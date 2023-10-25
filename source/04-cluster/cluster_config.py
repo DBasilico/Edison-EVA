@@ -37,8 +37,8 @@ spark = SparkSession.builder.appName('CLUSTER DA CONFIGURAZIONE: modello previsi
 
 ### Carichiamo la configurazione ###
 
-df_conf = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/CONFIGURAZIONE_CLUSTER/')
-#df_conf = spark.read.parquet(f'C:/Users/dbasilico/Desktop/Progetti/Edison/EVA/Edison-EVA-sviluppi/CONFIGURAZIONE_CLUSTER')
+#df_conf = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/CONFIGURAZIONE_CLUSTER/')
+df_conf = spark.read.parquet(f'C:/Users/dbasilico/Desktop/Progetti/Edison/EVA/Edison-EVA-sviluppi/CONFIGURAZIONE_CLUSTER')
 df_conf = df_conf.filter(f.col('SIMULAZIONE') == COD_SIMULAZIONE).pandas_api().set_index('ORDINAMENTO')
 df_conf.sort_index(inplace=True)
 
@@ -47,8 +47,8 @@ if not df_conf.index.is_unique:
 
 ### Creazione dei cluster ###
 
-df_anagrafica = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/ANAG_SII/')
-#df_anagrafica = spark.read.parquet(f'C:/Users/dbasilico/Desktop/Progetti/Edison/EVA/Edison-EVA-sviluppi/ANAG_SII')
+#df_anagrafica = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/ANAG_SII/')
+df_anagrafica = spark.read.parquet(f'C:/Users/dbasilico/Desktop/Progetti/Edison/EVA/Edison-EVA-sviluppi/ANAG_SII')
 
 df_anagrafica = df_anagrafica.filter(
     (f.col('DT_INI_VALIDITA') <= DATA_VALIDITA_ANAGRAFICA) &

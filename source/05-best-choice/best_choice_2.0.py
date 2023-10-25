@@ -1,20 +1,33 @@
-import subprocess
 import sys
+import subprocess
 
 subprocess.check_call([sys.executable, "-m", "pip", "install", "boto3"])
 subprocess.check_call([sys.executable, "-m", "pip", "install", "pandas"])
 
-from pyspark.sql.types import *
 from datetime import datetime
-from pyspark.sql import Window
+from pyspark.sql.types import *
 from pyspark.sql import functions as f
 from pyspark.sql import SparkSession
 from typing import Iterable
 from pyspark.sql.dataframe import DataFrame as sparkDF
 import boto3
 from dateutil.relativedelta import relativedelta
-import sys
 import pandas as pd
+from pyspark.sql import Window
+import logging
+
+COD_SIMULAZIONE = sys.argv[1]
+NOME_TABELLA = 'BEST_CHOICE_NEW'
+NOME_BUCKET = 'eva-qa-s3-model'
+TRACE_ANALISI = eval(sys.argv[2])
+
+INIZIO_PERIODO = datetime.strptime(sys.argv[3], '%Y-%m-%d').date()
+FINE_PERIODO = datetime.strptime(sys.argv[4], '%Y-%m-%d').date()
+tab_path = f'datamodel/{NOME_TABELLA}/'
+
+########################
+### GESTIONE DEI LOG ###
+########################
 
 
 def check_path_s3(path: str, is_file: bool = False):
@@ -23,6 +36,75 @@ def check_path_s3(path: str, is_file: bool = False):
         if path[0] == '/': path = path[1:]
     return path
 
+
+class LogStream(object):
+    def __init__(self):
+        self.logs = ''
+
+    def write(self, log_str):
+        self.logs += log_str
+
+    def flush(self):
+        pass
+
+    def __str__(self):
+        return self.logs
+
+    def __repr__(self):
+        return self.logs
+
+
+class S3logger(object):
+    def __init__(self, bucket_name: str, folder_path: str, nome_log: str = ''):
+        self.logger = logging.getLogger(nome_log)
+        self.log_stream = LogStream()
+        self.bucket_name = bucket_name
+        self.key = f'{check_path_s3(folder_path)}{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}.log'
+        log_handler = logging.StreamHandler(self.log_stream)
+        log_handler.setLevel(logging.INFO)
+        log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s:\n%(message)s\n'))
+        self.logger.addHandler(log_handler)
+        self.logger.info('Inizio logging')
+
+    def logs3(self, log_message: str, level: str = 'INFO'):
+        level = level.upper()
+        if level == 'DEBUG':
+            print('loggo debug')
+            self.logger.debug(log_message)
+        elif level == 'INFO':
+            print('loggo info')
+            self.logger.info(log_message)
+        elif level == 'WARNING':
+            print('loggo warning')
+            self.logger.warning(log_message)
+        elif level == 'ERROR':
+            print('loggo error')
+            self.logger.error(log_message)
+        elif level == 'ERROR':
+            print('loggo error')
+            self.logger.critical(log_message)
+        else:
+            self.logger.error(f'Livello {level} non definito\n{log_message}')
+        boto3.client("s3").put_object(Body=self.log_stream.logs, Bucket=self.bucket_name, Key=self.key)
+
+
+# logger = logging.getLogger('BEST CHOICE')
+#
+# log_stream = LogStream(bucket_name=NOME_BUCKET, folder_path=f'logs/{NOME_TABELLA}/')
+# log_handler = logging.StreamHandler(log_stream)
+# log_handler.setLevel(logging.INFO)
+# log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s:\n%(message)s\n'))
+#
+# logger.addHandler(log_handler)
+#
+# logger.debug('debugging something')
+# logger.info('informing user')
+#
+# boto3.client("s3").put_object(Body=log_stream.logs, Bucket=log_stream.BUCKET_NAME, Key=log_stream.KEY)
+
+log = S3logger(bucket_name=NOME_BUCKET, folder_path=f'logs/{NOME_TABELLA}', nome_log=NOME_TABELLA)
+
+log.logs3('test')
 
 def path_exists_s3(bucket: str, path: str, is_file: bool):
     path = check_path_s3(path, is_file)
@@ -46,17 +128,9 @@ def melt(
     cols = id_vars+[f.col("_vars_and_vals")[x].alias(x) for x in [var_name, value_name]]
     return _tmp.select(*cols)
 
+log.info("Hello S3 - NUMERO 2")
 
-spark = SparkSession.builder.appName('BEST_CHOICE v1.0.0').enableHiveSupport().getOrCreate()
-
-COD_SIMULAZIONE = sys.argv[1] #'1000'
-NOME_TABELLA = 'BEST_CHOICE'
-NOME_BUCKET = 'eva-qa-s3-model'
-TRACE_ANALISI = eval(sys.argv[2]) #False
-
-INIZIO_PERIODO = datetime.strptime(sys.argv[3], '%Y-%m-%d').date()
-FINE_PERIODO = datetime.strptime(sys.argv[4], '%Y-%m-%d').date()
-tab_path = f'datamodel/{NOME_TABELLA}/'
+spark = SparkSession.builder.appName('EVA - BEST CHOICE').enableHiveSupport().getOrCreate()
 
 data_corrente = INIZIO_PERIODO
 
@@ -65,7 +139,6 @@ data_corrente = INIZIO_PERIODO
 ##############################
 
 df_conf_cluster = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/CONFIGURAZIONE_CLUSTER')
-#df_conf_cluster = spark.read.parquet('./CONFIGURAZIONE_CLUSTER')
 
 df_conf_cluster = df_conf_cluster.filter(f.col('SIMULAZIONE') == COD_SIMULAZIONE)
 
@@ -88,9 +161,8 @@ while data_corrente <= FINE_PERIODO:
 
     # POD attivi in cui dobbiao calcolare la BEST CHOICE (DATA FORNITURA)
     df_anagrafica = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/ANAG_SII')
-    #df_anagrafica = spark.read.parquet('./ANAG_SII')
 
-    df_anagrafica = df_anagrafica.filter(f.col('TRATTAMENTO') == 'O')
+    df_anagrafica = df_anagrafica.filter(f.col('TIPO_MISURATORE').isin(['E', 'G', 'O']))
 
     df_anagrafica = df_anagrafica.withColumn('DT_INI_VALIDITA', f.to_timestamp(f.col('DT_INI_VALIDITA'), 'dd/MM/yyyy HH:mm:SS'))
     df_anagrafica = df_anagrafica.withColumn('DT_FIN_VALIDITA', f.to_timestamp(f.col('DT_FIN_VALIDITA'), 'dd/MM/yyyy HH:mm:SS'))
@@ -98,12 +170,15 @@ while data_corrente <= FINE_PERIODO:
 
     # Filtriamo solo i pod che hanno inizio e fine fornitura nella data corrente
     df_anagrafica = df_anagrafica.filter(
-        (f.col('DT_FIN_VALIDITA') >= data_corrente) &
-        (f.col('DT_INI_VALIDITA') <= data_corrente)
+        (f.col('DT_FIN_VALIDITA') >= (data_corrente + relativedelta(days=1))) &
+        (f.col('DT_INI_VALIDITA') <= (data_corrente + relativedelta(days=1)))
     )
 
-    #if df_anagrafica.groupBy('POD').count().filter(f.col('count') > 1).count() > 0:
-    #    raise AttributeError(f'ERRORE: in anagrafica sono presenti pod multipli per il giorno {data_corrente}')
+    # CODIZIONI PER CAPIRE SE POD E' 1G OPPURE 2G
+    cond_flusso_dati = f.when(f.col('TIPO_MISURATORE') == 'G', f.lit('2G')).when(f.col('TIPO_MISURATORE').isin(['E', 'O']), f.lit('1G')).otherwise(f.lit('ERRORE'))
+    df_anagrafica = df_anagrafica.withColumn('FLUSSO_DATI', cond_flusso_dati)
+
+    #TODO: gestione degli errori in anagrafica
 
     ###############
     ### CLUSTER ###
@@ -154,8 +229,12 @@ while data_corrente <= FINE_PERIODO:
     df_anagrafica = df_anagrafica.select(
         f.col('POD'),
         f.col('CLUSTER'),
+        f.col('FLUSSO_DATI'),
         f.col('CONSUMO_ANNUO_COMPLESSIVO').alias('EAC')
     )
+
+    #TODO: eliminare drop duplicates: non dovrebbero esistere pod doppi
+    df_anagrafica = df_anagrafica.dropDuplicates(subset=['POD'])
 
     ######################
     ### CALENDARIO-POD ###
@@ -167,7 +246,8 @@ while data_corrente <= FINE_PERIODO:
             'UNIX_TIME',
             'TIMESTAMP',
             'DATA',
-            'ORA_GME'
+            'ORA_GME',
+            'GIORNO_SETTIMANA'
     )
 
     df_num_giorni_anno = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/CALENDARIO_GME') \
@@ -198,11 +278,6 @@ while data_corrente <= FINE_PERIODO:
     #TODO: eliminare drop_duplicates
     df_1g_enelg = df_1g_enelg.dropDuplicates(subset=['POD', 'YMD', 'TS'])
 
-    #if df_1g_enelg.groupBy('POD', 'YMD').count().filter(f.col('count')>1).count() > 0:
-    #    check = df_1g_enelg.groupBy('POD', 'YMD').count().filter(f.col('count') > 1).select('POD', 'YMD')
-    #    df_1g_enelg.join(check, on=['POD', 'YMD'], how='inner').repartition(1).write.mode('overwrite').csv(f's3://{NOME_BUCKET}/datamodel/DUPLICATI_1G')
-    #    raise AttributeError('ERRORE: POD, GIORNO non chiave in 1g-giorno')
-
     for hh in range(0, 25):
         sum_col = f.col(f'con_e_{(hh*4+1):03}')
         for qh_idx in range(2, 5):
@@ -225,8 +300,9 @@ while data_corrente <= FINE_PERIODO:
 
     df_1g_enelg = df_1g_enelg.withColumn('ORA', f.substring(f.col('ORA'), -2, 2).cast(IntegerType()))
     df_1g_enelg = df_1g_enelg.withColumnRenamed('ORA', 'ORA_GME')
+    df_1g_enelg = df_1g_enelg.withColumn('FLUSSO_DATI', f.lit('1G'))
 
-    df_best_choice = df_best_choice.join(df_1g_enelg, on=['POD', 'DATA', 'ORA_GME'], how='left')
+    df_best_choice = df_best_choice.join(df_1g_enelg, on=['POD', 'DATA', 'ORA_GME', 'FLUSSO_DATI'], how='left')
 
     del df_1g_enelg
 
@@ -241,16 +317,6 @@ while data_corrente <= FINE_PERIODO:
             ymd = '{data_corrente.strftime("%Y/%m/%d")}' AND
             grandezza = 'A'
     """)
-
-    # df_misura = spark.sql('SELECT * FROM `623333656140/thr_prod_glue_db`.ee_misura_m1g') \
-    #     .select(
-    #         'id_misura_m2g',
-    #         'motivazione'
-    # )
-    #
-    # df_1g = df_1g.join(df_misura, on=['id_misura_m2g'], how='left')
-    #
-    # df_1g = df_1g.filter(f.col('motivazione') != '3')
 
     df_1g = df_1g.withColumn('RANK_ORIGINE',
         f.when(f.col('cd_flow')=='XLSX', f.lit(7))
@@ -269,12 +335,8 @@ while data_corrente <= FINE_PERIODO:
     df_1g = df_1g.filter(f.col('RANK') == 1)
 
     #TODO: eliminare drop_duplicates -> eliminare quello con meno energia
-    df_1g = df_1g.dropDuplicates(subset=['POD', 'YMD', 'TS'])
 
-    #if df_1g.groupBy('POD', 'YMD').count().filter(f.col('count')>1).count() > 0:
-    #    check = df_1g.groupBy('POD', 'YMD').count().filter(f.col('count') > 1).select('POD', 'YMD')
-    #    df_1g.join(check, on=['POD', 'YMD'], how='inner').repartition(1).write.mode('overwrite').csv(f's3://{NOME_BUCKET}/datamodel/DUPLICATI_1G_BEST')
-    #    raise AttributeError('ERRORE: POD, GIORNO non chiave in 1g')
+    df_1g = df_1g.dropDuplicates(subset=['POD', 'YMD', 'TS'])
 
     for hh in range(0, 25):
         sum_col = f.col(f'con_e_{(hh*4+1):03}')
@@ -298,8 +360,9 @@ while data_corrente <= FINE_PERIODO:
 
     df_1g = df_1g.withColumn('ORA', f.substring(f.col('ORA'), -2, 2).cast(IntegerType()))
     df_1g = df_1g.withColumnRenamed('ORA', 'ORA_GME')
+    df_1g = df_1g.withColumn('FLUSSO_DATI', f.lit('1G'))
 
-    df_best_choice = df_best_choice.join(df_1g, on=['POD', 'DATA', 'ORA_GME'], how='left')
+    df_best_choice = df_best_choice.join(df_1g, on=['POD', 'DATA', 'ORA_GME', 'FLUSSO_DATI'], how='left')
 
     del df_1g
 
@@ -349,21 +412,55 @@ while data_corrente <= FINE_PERIODO:
 
     df_2g = df_2g.withColumn('ORA', f.substring(f.col('ORA'), -2, 2).cast(IntegerType()))
     df_2g = df_2g.withColumnRenamed('ORA', 'ORA_GME')
+    df_2g = df_2g.withColumn('FLUSSO_DATI', f.lit('2G'))
 
-    df_best_choice = df_best_choice.join(df_2g, on=['POD', 'DATA', 'ORA_GME'], how='left')
+    df_best_choice = df_best_choice.join(df_2g, on=['POD', 'DATA', 'ORA_GME', 'FLUSSO_DATI'], how='left')
 
     del df_2g
 
-    cond_1g = (f.col('ENERGIA_1G_GIORNO').isNotNull() | f.col('ENERGIA_1G_BEST').isNotNull()) & (f.col('ENERGIA_2G_BEST').isNull())
-    cond_2g = (f.col('ENERGIA_1G_GIORNO').isNull() & f.col('ENERGIA_1G_BEST').isNull()) & (f.col('ENERGIA_2G_BEST').isNotNull())
+    ####################################
+    ### AGGIUSTIAMO I CAMPI MANCANTI ###
+    ####################################
+
+    # Recuperiamo i valori mancanti prendendo l'ultimo dato disponibile corrispondente al primo giorno della settimana mancante
+    w_recupero_na = Window.partitionBy('GIORNO_SETTIMANA').orderBy('UNIX_TIME').rowsBetween(Window.unboundedPreceding, Window.currentRow)
     no_dato_cond = (f.col('ENERGIA_1G_GIORNO').isNull()) & (f.col('ENERGIA_1G_BEST').isNull()) & (f.col('ENERGIA_2G_BEST').isNull())
 
-    df_best_choice = df_best_choice.withColumn('TIPOLOGIA_MISURA',
-       f.when(cond_1g, f.lit('1G'))
-       .when(cond_2g, f.lit('2G'))
-       .when(no_dato_cond, f.lit('MANCANTE'))
-       .otherwise(f.lit('MIX'))
+    df_best_choice = df_best_choice.withColumn('ENERGIA_1G_BEST_RECUPERO_NA', f.first(f.col('ENERGIA_1G_BEST'), ignorenulls=True).over(w_recupero_na))
+    df_best_choice = df_best_choice.withColumn('ENERGIA_2G_BEST_RECUPERO_NA', f.first(f.col('ENERGIA_2G_BEST'), ignorenulls=True).over(w_recupero_na))
+    df_best_choice = df_best_choice.withColumn('FLAG_DATO_MANCANTE', f.when(no_dato_cond, f.lit('Y')).otherwise(f.lit('N')))
+
+    df_best_choice = df_best_choice.withColumn('ENERGIA_1G_MISURA', f.coalesce(f.col('ENERGIA_1G_BEST'), f.col('ENERGIA_1G_GIORNO')))
+    df_best_choice = df_best_choice.withColumn('ENERGIA_2G_MISURA', f.col('ENERGIA_2G_BEST'))
+
+    df_best_choice = df_best_choice.withColumn('ENERGIA_1G_MANCANTE',
+        f.when(
+           f.col('ENERGIA_1G_MISURA').isNull(),
+           f.col('ENERGIA_1G_BEST_RECUPERO_NA')
+        ).otherwise(
+           f.lit(None).cast(DoubleType())
+        )
     )
+    df_best_choice = df_best_choice.withColumn('ENERGIA_2G_MANCANTE',
+        f.when(
+           f.col('ENERGIA_2G_MISURA').isNull(),
+           f.col('ENERGIA_2G_BEST_RECUPERO_NA')
+        ).otherwise(
+           f.lit(None).cast(DoubleType())
+        )
+    )
+
+    df_best_choice = df_best_choice.withColumn('CONSUMI_MISURA',
+        f.when(f.col('FLUSSO_DATI') == '1G', f.col('ENERGIA_1G_MISURA'))
+         .when(f.col('FLUSSO_DATI') == '2G', f.col('ENERGIA_1G_MISURA'))
+    )
+
+    df_best_choice = df_best_choice.withColumn('CONSUMI_MANCANTI',
+        f.when(f.col('FLUSSO_DATI') == '1G', f.col('ENERGIA_1G_MANCANTE'))
+         .when(f.col('FLUSSO_DATI') == '2G', f.col('ENERGIA_2G_MANCANTE'))
+    )
+
+    df_best_choice = df_best_choice.withColumn('CONSUMI', f.coalesce(f.col('CONSUMI_MISURA'), f.col('CONSUMI_MANCANTI'), f.col('EAC_GIORNO_ORA')))
 
     #############################################
     ### SCRITTURA TABELLA ANALISI BEST-CHOICE ###
@@ -378,19 +475,11 @@ while data_corrente <= FINE_PERIODO:
     ### AGGREGAZIONE CLUSTER ###
     ############################
 
-    no_dato_cond = (f.col('ENERGIA_1G_GIORNO').isNull()) & (f.col('ENERGIA_1G_BEST').isNull()) & (f.col('ENERGIA_2G_BEST').isNull())
-
-    df_best_choice = df_best_choice.groupBy('CLUSTER', 'DATA', 'UNIX_TIME', 'ORA_GME', 'TIMESTAMP').agg(
-        f.sum('EAC_GIORNO_ORA').alias('EAC'),
-        f.sum(f.when(no_dato_cond, f.col('EAC_GIORNO_ORA')).otherwise(f.lit(0.))).alias('EAC_MANCANTE'),
+    df_best_choice = df_best_choice.groupBy('CLUSTER', 'DATA', 'UNIX_TIME', 'ORA_GME', 'TIMESTAMP', 'FLUSSO_DATI').agg(
         f.count(f.lit(1)).alias('N_POD'),
-        f.sum(f.when(f.col('TIPOLOGIA_MISURA')=='MANCANTE', f.lit(1)).otherwise(f.lit(0))).alias('N_POD_MANCANTI'),
-        f.sum(f.when(f.col('TIPOLOGIA_MISURA')=='1G', f.lit(1)).otherwise(f.lit(0))).alias('N_MISURE_1G'),
-        f.sum(f.when(f.col('TIPOLOGIA_MISURA')=='2G', f.lit(1)).otherwise(f.lit(0))).alias('N_MISURE_2G'),
-        f.sum(f.when(f.col('TIPOLOGIA_MISURA')=='MIX', f.lit(1)).otherwise(f.lit(0))).alias('N_MISURE_MIX'),
-        f.sum('ENERGIA_1G_GIORNO').alias('ENERGIA_1G_GIORNO'),
-        f.sum('ENERGIA_1G_BEST').alias('ENERGIA_1G_BEST'),
-        f.sum('ENERGIA_2G_BEST').alias('ENERGIA_2G_BEST')
+        f.sum(f.when(f.col('FLAG_DATO_MANCANTE') == 'Y', f.lit(1)).otherwise(f.lit(0))).alias('N_POD_MANCANTI'),
+        f.sum('CONSUMI').alias('CONSUMI'),
+        f.sum('CONSUMI_MANCANTI').alias('CONSUMI_MANCANTI')
     )
 
     df_best_choice = df_best_choice.withColumn('SIMULAZIONE', f.lit(COD_SIMULAZIONE))

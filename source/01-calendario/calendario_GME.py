@@ -69,10 +69,9 @@ for anno in range(min_anno, datetime.now().year+1):
     df = pd.DataFrame(index=pd.date_range(start=f'1/1/{anno} 00:00:00', end=f'31/12/{anno} 23:00:00',
                                       freq='H', tz='Europe/Rome'))
     df['UNIX_TIME'] = [date.timestamp() for date in df.index]
-    df['TIMESTAMP'] = [date.strftime('%Y-%m-%d %H:%M:%S') for date in df.index]
+    df['TIMESTAMP'] = [date.strftime('%Y-%m-%d %H:%M:%S %z') for date in df.index]
     df = spark.createDataFrame(df)
     df = df.withColumn('UNIX_TIME', f.col('UNIX_TIME').cast('bigint'))
-    df = df.withColumn('TIMESTAMP', f.to_timestamp(f.col('TIMESTAMP'), 'yyyy-MM-dd HH:mm:ss'))
     df = df.withColumn('DATA', f.to_date(f.col('TIMESTAMP')))
     df = df.withColumn('GIORNO', f.dayofmonth(f.col('DATA')))
     df = df.withColumn('MESE', f.month(f.col('DATA')))
@@ -95,5 +94,5 @@ for anno in range(min_anno, datetime.now().year+1):
     else:
         df_finale = df_finale.unionByName(df)
 
-df_finale.repartition(32, 'UNIX_TIME').write.partitionBy(['ANNO']).mode('overwrite').parquet(f's3://{NOME_BUCKET}/datamodel/{NOME_TABELLA}')
-
+#df_finale.repartition(32, 'UNIX_TIME').write.partitionBy(['ANNO']).mode('overwrite').parquet(f's3://{NOME_BUCKET}/datamodel/{NOME_TABELLA}')
+df_finale.repartition(32, 'UNIX_TIME').write.partitionBy(['ANNO']).mode('overwrite').parquet(f'./CALENDARIO_GME')
