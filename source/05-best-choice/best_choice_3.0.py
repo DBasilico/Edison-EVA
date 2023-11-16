@@ -26,7 +26,7 @@ LAG_PREVISIONE = int(sys.argv[8]) if EFFETTUARE_PREVISIONE else 0
 
 tab_path = f'datamodel/{NOME_TABELLA}/'
 
-now = datetime.now()
+now = datetime(2023, 10, 1)
 
 spark = SparkSession.builder.appName('EVA - BEST CHOICE').enableHiveSupport().getOrCreate()
 
@@ -68,8 +68,8 @@ if not df_conf_cluster.index.is_unique:
 df_anagrafica = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/ANAG_SII')
 df_anagrafica = df_anagrafica.filter(f.col('TRATTAMENTO') == 'O')
 df_anagrafica = df_anagrafica.withColumn('TIPO_FLUSSO', f.when(f.col('TIPO_MISURATORE') == 'G', f.lit('2G')).otherwise(f.lit('1G')))
-df_anagrafica = df_anagrafica.withColumn('DT_INI_VALIDITA', f.to_timestamp(f.col('DT_INI_VALIDITA'), 'dd/MM/yyyy HH:mm:SS'))
-df_anagrafica = df_anagrafica.withColumn('DT_FIN_VALIDITA', f.to_timestamp(f.col('DT_FIN_VALIDITA'), 'dd/MM/yyyy HH:mm:SS'))
+df_anagrafica = df_anagrafica.withColumn('DT_INI_VALIDITA', f.date_trunc('day', f.to_timestamp(f.col('DT_INI_VALIDITA'), 'dd/MM/yyyy HH:mm:SS')))
+df_anagrafica = df_anagrafica.withColumn('DT_FIN_VALIDITA', f.date_trunc('day', f.to_timestamp(f.col('DT_FIN_VALIDITA'), 'dd/MM/yyyy HH:mm:SS')))
 df_anagrafica = df_anagrafica.withColumn('CONSUMO_ANNUO_COMPLESSIVO', f.regexp_replace(f.col('CONSUMO_ANNUO_COMPLESSIVO'), ',', '.').cast(DoubleType()))
 
 # Filtriamo solo i pod che hanno inizio e fine fornitura nella data corrente
@@ -79,6 +79,8 @@ df_anagrafica = df_anagrafica.filter(
 )
 
 # TODO: gestione degli errori in anagrafica
+
+#df_anagrafica.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC1_ANAGRAFICA')
 
 ##########################
 ### ANAGRAFICA PER EAC ###
@@ -103,6 +105,8 @@ df_eac = df_eac.join(df_num_ore_giorno, on=['DATA'], how='left')
 df_eac = df_eac.withColumn('EAC', f.col('EAC')/f.col('NUM_ORE_GIORNO')).drop('NUM_ORE_GIORNO')
 
 df_eac = df_eac.groupBy('POD', 'DATA').agg(f.avg('EAC').alias('EAC'))
+
+#df_eac.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC2_EAC')
 
 ###############
 ### CLUSTER ###
@@ -153,7 +157,7 @@ for k_rule in df_conf_cluster.index.to_numpy():
 
 df_anagrafica = df_anagrafica.withColumn('CLUSTER', f.coalesce(f.col('CLUSTER'), f.lit('CLUSTER_MANCANTI')))
 
-df_anagrafica.repartition(1).write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/ANAGRAFICA_CLUSTER')
+#df_anagrafica.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC3_ANAGRAFICA_CLUSTER')
 
 df_anagrafica = df_anagrafica.select(
     f.col('POD'),
@@ -177,11 +181,16 @@ df_calendario = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/CALENDARIO_GME
         'GIORNO_SETTIMANA'
 )
 
-OFFSET = df_calendario.filter(f.col('DATA').between(FINE_PERIODO+relativedelta(days=1), FINE_PERIODO+relativedelta(days=LAG_PREVISIONE))).count()
+if EFFETTUARE_PREVISIONE:
+    PRIMO_GIORNO_PREVISIONE = FINE_PERIODO+relativedelta(days=1)
+    ULTIMO_GIORNO_PREVISIONE = FINE_PERIODO+relativedelta(days=LAG_PREVISIONE)
+    OFFSET = df_calendario.filter(f.col('DATA').between(PRIMO_GIORNO_PREVISIONE, ULTIMO_GIORNO_PREVISIONE)).count()
 
 df_best_choice = df_anagrafica.crossJoin(df_calendario)
 
 df_best_choice = df_best_choice.join(df_eac, on=['POD', 'DATA'], how='left')
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC4_ANAGRAFICA_CLUSTER_CALENDARIO')
 
 ##########################
 ### MISURE 1G - GIORNO ###
@@ -189,8 +198,10 @@ df_best_choice = df_best_choice.join(df_eac, on=['POD', 'DATA'], how='left')
 
 df_1g_giorno = extract_1g_giorno(spark, INIZIO_PERIODO, FINE_PERIODO)
 df_best_choice = df_best_choice.join(df_1g_giorno, on=['POD', 'DATA', 'ORA_GME'], how='left')
-df_1g_giorno.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/1G_GIORNO')
+#df_1g_giorno.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/1G_GIORNO')
 del df_1g_giorno
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC5_1G_GIORNO')
 
 ########################
 ### MISURE 1G - BEST ###
@@ -198,8 +209,10 @@ del df_1g_giorno
 
 df_1g_best = extract_1g_best(spark, INIZIO_PERIODO, FINE_PERIODO)
 df_best_choice = df_best_choice.join(df_1g_best, on=['POD', 'DATA', 'ORA_GME'], how='left')
-df_1g_best.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/1G_BEST')
+#df_1g_best.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/1G_BEST')
 del df_1g_best
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC6_1G_BEST')
 
 ########################
 ### MISURE 2G - BEST ###
@@ -207,8 +220,10 @@ del df_1g_best
 
 df_2g_best = extract_2g_best(spark, INIZIO_PERIODO, FINE_PERIODO)
 df_best_choice = df_best_choice.join(df_2g_best, on=['POD', 'DATA', 'ORA_GME'], how='left')
-df_2g_best.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/2G_BEST')
+#df_2g_best.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/2G_BEST')
 del df_2g_best
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC7_2G_BEST')
 
 ###########################
 ### AGGIUSTIAMO I CAMPI ###
@@ -227,6 +242,35 @@ df_best_choice = df_best_choice.withColumn('IS_MISSING', f.when(
     f.lit(0)
 ))
 
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC8')
+
+df_best_choice = df_best_choice.withColumn('ENERGIA_1G_BEST_VALORE', f.when(
+    f.col('ENERGIA_1G_BEST').isNotNull(),
+    f.col('ENERGIA_1G_BEST')
+).otherwise(
+    f.lit(None).cast(DoubleType())
+))
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC9')
+
+df_best_choice = df_best_choice.withColumn('ENERGIA_1G_GIORNO_VALORE', f.when(
+    (f.col('ENERGIA_1G_BEST').isNull()) & (f.col('ENERGIA_1G_GIORNO').isNotNull()),
+    f.col('ENERGIA_1G_GIORNO')
+).otherwise(
+    f.lit(None).cast(DoubleType())
+))
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC10')
+
+df_best_choice = df_best_choice.withColumn('ENERGIA_2G_BEST_VALORE', f.when(
+    (f.col('ENERGIA_1G_BEST').isNull()) & (f.col('ENERGIA_1G_GIORNO').isNull()) & (f.col('ENERGIA_2G_BEST').isNotNull()),
+    f.col('ENERGIA_2G_BEST')
+).otherwise(
+    f.lit(None).cast(DoubleType())
+))
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC11')
+
 df_best_choice = df_best_choice.withColumn('ENERGIA_NA_VALORE', f.when(
     f.col('IS_MISSING') == 1,
     f.coalesce(f.col('ENERGIA_1G_RECUPERO_NA'), f.col('ENERGIA_2G_RECUPERO_NA'))
@@ -234,12 +278,16 @@ df_best_choice = df_best_choice.withColumn('ENERGIA_NA_VALORE', f.when(
     f.lit(None)
 ))
 
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC12')
+
 df_best_choice = df_best_choice.withColumn('ENERGIA_EAC_VALORE', f.when(
     (f.col('IS_MISSING') == 1) & (f.col('ENERGIA_NA_VALORE').isNull()),
     f.col('EAC')
 ).otherwise(
     f.lit(None)
 ))
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC13')
 
 df_best_choice = df_best_choice.withColumn('CONSUMI', f.coalesce(
     f.col('ENERGIA_1G_BEST'),
@@ -250,15 +298,20 @@ df_best_choice = df_best_choice.withColumn('CONSUMI', f.coalesce(
     f.col('EAC')
 ))
 
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC14')
+
 window_lag = Window.partitionBy('POD').orderBy(f.col('UNIX_TIME').asc())
 
-df_best_choice = df_best_choice.withColumn('PREVISIONE', f.lag(f.col('CONSUMI'), offset=OFFSET).over(window_lag))
+if EFFETTUARE_PREVISIONE:
+    df_best_choice = df_best_choice.withColumn('PREVISIONE', f.lag(f.col('CONSUMI'), offset=OFFSET).over(window_lag))
+else:
+    df_best_choice = df_best_choice.withColumn('PREVISIONE', f.lit(None).cast(DoubleType()))
+
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC15')
 
 #############################################
 ### SCRITTURA TABELLA ANALISI BEST-CHOICE ###
 #############################################
-
-df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/datamodel/{NOME_TABELLA}_ANALISI')
 
 if TRACE_ANALISI:
     outpath_trace = f's3://{NOME_BUCKET}/datamodel/{NOME_TABELLA}_ANALISI'
@@ -275,26 +328,29 @@ if TRACE_ANALISI:
 ############################
 
 if EFFETTUARE_PREVISIONE:
-    df_best_choice_previsione = df_best_choice.filter(f.col('DATA').between(FINE_PERIODO+relativedelta(days=1), FINE_PERIODO+relativedelta(days=LAG_PREVISIONE)))
+    df_best_choice_previsione = df_best_choice.filter(f.col('DATA').between(PRIMO_GIORNO_PREVISIONE, ULTIMO_GIORNO_PREVISIONE))
     df_best_choice = df_best_choice.filter(f.col('DATA').between(INIZIO_PERIODO, FINE_PERIODO))
-
     df_best_choice_previsione = df_best_choice_previsione.groupBy('CLUSTER', 'UNIX_TIME').agg(
         f.sum('PREVISIONE').alias('PREVISIONE')
     )
-    df_best_choice_previsione = df_best_choice_previsione.withColumn('NOME_TRANSFORM', f.lit('Benchmark'))
+    df_best_choice_previsione = df_best_choice_previsione.withColumn('NOME_TRANSFORM', f.lit('Benchmark - Like Day'))
     df_best_choice_previsione = df_best_choice_previsione.withColumn('SIMULAZIONE', f.lit(COD_SIMULAZIONE))
-
-    df_best_choice_previsione.write.mode('overwrite').parquet('s3://eva-qa-s3-model/datamodel/FORECAST_SAGEMAKER/BENCHMARK')
+    df_best_choice_previsione = df_best_choice_previsione.withColumn('PRIMO_GIORNO_PREVISIONE', f.lit(PRIMO_GIORNO_PREVISIONE))
+    df_best_choice_previsione.write.mode('append').partitionBy(['SIMULAZIONE', 'NOME_TRANSFORM', 'PRIMO_GIORNO_PREVISIONE']) \
+        .parquet(f's3://{NOME_BUCKET}/datamodel/FORECAST_SAGEMAKER/BENCHMARK')
 
 df_best_choice = df_best_choice.groupBy('CLUSTER', 'DATA', 'UNIX_TIME', 'ORA_GME', 'TIMESTAMP').agg(
     f.count(f.lit(1)).cast('bigint').alias('N_POD'),
     f.sum('IS_MISSING').cast('bigint').alias('N_POD_MANCANTI'),
-    f.sum('ENERGIA_1G_BEST').alias('CONSUMI_1G_BEST'),
-    f.sum('ENERGIA_1G_GIORNO').alias('CONSUMI_1G_GIORNO'),
-    f.sum('ENERGIA_2G_BEST').alias('CONSUMI_2G_BEST'),
+    f.sum('ENERGIA_1G_BEST_VALORE').alias('CONSUMI_1G_CERT'),
+    f.sum('ENERGIA_1G_GIORNO_VALORE').alias('CONSUMI_1G_NOCERT'),
+    f.sum('ENERGIA_2G_BEST_VALORE').alias('CONSUMI_2G_CERT'),
     f.sum('ENERGIA_NA_VALORE').alias('CONSUMI_NA_RECUPERATI'),
     f.sum('ENERGIA_EAC_VALORE').alias('CONSUMI_NA_EAC'),
-    f.sum('CONSUMI').alias('CONSUMI')
+    f.sum('CONSUMI').alias('CONSUMI'),
+    f.sum('ENERGIA_1G_BEST').alias('THOR_1G_CERT'),
+    f.sum('ENERGIA_1G_GIORNO').alias('THOR_1G_NOCERT'),
+    f.sum('ENERGIA_2G_BEST').alias('THOR_2G_CERT')
 )
 
 df_best_choice = df_best_choice.withColumn('SIMULAZIONE', f.lit(COD_SIMULAZIONE))
