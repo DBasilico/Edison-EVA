@@ -16,46 +16,25 @@ from dateutil.relativedelta import relativedelta
 from datetime import datetime
 import pandas as pd
 from shared_lib import apply_map, melt, get_subfolders_s3, delete_folder_s3
+import holidays
 
 map_tensioni = {
-    'RES': 1.1
+    'AT': 1.018,
+    'BT': 1.1,
+    'CT': 1.011,
+    'DT': 1.007,
+    'IL': 1.,
+    'MT': 1.038
 }
 
-LISTA_PONTI_2023 = [
-    [date(2023, 1, 1), 'FESTIVITA - CAPODANNO', 'ITALIA'],
-    [date(2023, 1, 2), 'PONTE - CAPODANNO', 'ITALIA'],
-    [date(2023, 1, 3), 'PONTE - EPIFANIA', 'ITALIA'],
-    [date(2023, 1, 4), 'PONTE - EPIFANIA', 'ITALIA'],
-    [date(2023, 1, 5), 'PONTE - EPIFANIA', 'ITALIA'],
-    [date(2023, 1, 6), 'FESTIVITA - EPIFANIA', 'ITALIA'],
-    [date(2023, 2, 20), 'PONTE - CARNEVALE', 'ITALIA'],
-    [date(2023, 2, 21), 'FESTIVITA - CARNEVALE', 'ITALIA'],
-    [date(2023, 4, 7), 'PONTE - PASQUA', 'ITALIA'],
-    [date(2023, 4, 8), 'PONTE - PASQUA', 'ITALIA'],
-    [date(2023, 4, 9), 'FESTIVITA - PASQUA', 'ITALIA'],
-    [date(2023, 4, 10), 'FESTIVITA - PASQUETTA', 'ITALIA'],
-    [date(2023, 4, 24), 'PONTE - LIBERAZIONE', 'ITALIA'],
-    [date(2023, 4, 25), 'FESTIVITA - LIBERAZIONE', 'ITALIA'],
-    [date(2023, 5, 1), 'FESTIVITA - FESTA DEL LAVORO', 'ITALIA'],
-    [date(2023, 6, 1), 'PONTE - FESTA DELLA REPUBBLICA', 'ITALIA'],
-    [date(2023, 6, 2), 'FESTIVITA - FESTA DELLA REPUBBLICA', 'ITALIA'],
-    [date(2023, 6, 29), 'FESTIVITA - SAN PIETRO E PAOLO', 'RM'],
-    [date(2023, 6, 30), 'PONTE - SAN PIETRO E PAOLO', 'RM'],
-    [date(2023, 8, 14), 'PONTE - FERRAGOSTO', 'ITALIA'],
-    [date(2023, 8, 15), 'FESTIVITA - FERRAGOSTO', 'ITALIA'],
-    [date(2023, 11, 1), 'FESTIVITA - TUTTI I SANTI', 'ITALIA'],
-    [date(2023, 11, 2), 'PONTE - TUTTI I SANTI', 'ITALIA'],
-    [date(2023, 11, 3), 'PONTE - TUTTI I SANTI', 'ITALIA'],
-    [date(2023, 12, 7), 'FESTIVITA - SANT AMBROGIO', 'MI'],
-    [date(2023, 12, 8), 'FESTIVITA - IMMACOLATA', 'ITALIA'],
-    [date(2023, 12, 21), 'PONTE - NATALE', 'ITALIA'],
-    [date(2023, 12, 22), 'PONTE - NATALE', 'ITALIA'],
-    [date(2023, 12, 25), 'FESTIVITA - NATALE', 'ITALIA'],
-    [date(2023, 12, 26), 'FESTIVITA - SANTO STEFANO', 'ITALIA'],
-    [date(2023, 12, 27), 'PONTE - NATALE', 'ITALIA'],
-    [date(2023, 12, 28), 'PONTE - NATALE', 'ITALIA'],
-    [date(2023, 12, 29), 'PONTE - NATALE', 'ITALIA'],
-]
+LISTA_PONTI_2023 = list()
+
+for holiday in holidays.Italy(years=[2018, 2019, 2020, 2021, 2022, 2023, 2024]).items():
+    LISTA_PONTI_2023.append(list(holiday)+['ITALIA'])
+
+LISTA_PONTI_2023.append([date(2023, 12, 7), 'SANT AMBROGIO', 'MI'])
+LISTA_PONTI_2023.append([date(2022, 12, 7), 'SANT AMBROGIO', 'MI'])
+LISTA_PONTI_2023.append([date(2021, 12, 7), 'SANT AMBROGIO', 'MI'])
 
 ################
 ### FUNZIONI ###
@@ -282,7 +261,7 @@ def add_festivita(
     df_best_choice = df_best_choice.join(df_ponti_italia, on=['DATA'], how='left')
     df_best_choice = df_best_choice.join(df_ponti_province, on=['DATA', 'PROVINCIA_CRM'], how='left')
 
-    df_best_choice = df_best_choice.withColumn('FESTIVITA', f.coalesce(f.col('FESTIVITA_PROVINCIA'), f.col('FESTIVITA_ITALIA'), f.lit('NO FESTIVITA')))\
+    df_best_choice = df_best_choice.withColumn('FESTIVITA', f.coalesce(f.col('FESTIVITA_PROVINCIA'), f.col('FESTIVITA_ITALIA')))\
         .drop('FESTIVITA_ITALIA', 'FESTIVITA_PROVINCIA')
 
     return df_best_choice
@@ -300,6 +279,9 @@ FINE_PERIODO = datetime.strptime(sys.argv[4], '%Y-%m-%d').date()
 EFFETTURARE_RECUPERO = eval(sys.argv[5])
 IS_PREVISIONE = eval(sys.argv[6])
 DATA_BACKTEST = datetime.strptime(sys.argv[7], '%Y-%m-%d')
+
+if FINE_PERIODO < INIZIO_PERIODO:
+    raise Exception('ERRORE: data fine periodo minore di data inizio periodo')
 
 LOG_PATH_FILE = f'logs/BEST_CHOICE/COD_SIMULAZIONE={COD_SIMULAZIONE}/PERIODO={INIZIO_PERIODO.strftime("%Y%m%d")}_{FINE_PERIODO.strftime("%Y%m%d")}/{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}.log'
 NOME_TABELLA = 'BEST_CHOICE_POW'
@@ -337,12 +319,13 @@ boto3.client("s3").put_object(Body=log_string, Bucket=NOME_BUCKET, Key=LOG_PATH_
 ### ANAGRAFICA ###
 ##################
 
-nome_tabella_anagrafica = 'output/'
+NOME_BUCKET_ANAGRAFICA = 'eva-qa-s3-datalake'
+nome_tabella_anagrafica = 'root/EDP/Eva/Replication/PortafoglioCertificato/output/'
 
-folder_anagrafica = get_subfolders_s3(bucket=NOME_BUCKET, path=nome_tabella_anagrafica)
+folder_anagrafica = get_subfolders_s3(bucket=NOME_BUCKET_ANAGRAFICA, path=nome_tabella_anagrafica)
 folder_anagrafica = max([x.split('/')[-2] for x in folder_anagrafica])
 
-df_anagrafica = spark.read.parquet(f's3://{NOME_BUCKET}/{nome_tabella_anagrafica}/{folder_anagrafica}')
+df_anagrafica = spark.read.parquet(f's3://{NOME_BUCKET_ANAGRAFICA}/{nome_tabella_anagrafica}/{folder_anagrafica}')
 df_anagrafica = df_anagrafica.filter(f.col('TRATTAMENTO') == 'O')
 df_anagrafica = df_anagrafica.withColumn('TIPO_FLUSSO',
                                          f.when(f.col('TIPO_MISURATORE') == 'G', f.lit('2G')).otherwise(
@@ -429,7 +412,7 @@ df_anagrafica = df_anagrafica.withColumn('CLUSTER', f.coalesce(f.col('CLUSTER'),
 
 df_anagrafica = apply_map(
     df=df_anagrafica,
-    col_name='ID_AREA_GESTIONALE',
+    col_name='TENSIONE',
     map_dict=map_tensioni,
     mantieni_mancanti=False,
     default_mancanti=1.0,
@@ -469,7 +452,9 @@ df_calendario = spark.read.parquet(f's3://{NOME_BUCKET}/datamodel/CALENDARIO_GME
         'GIORNO_SETTIMANA'
 )
 df_best_choice = df_anagrafica.crossJoin(df_calendario)
-df_best_choice = df_best_choice.filter(f.col('DATA').between(f.col('DT_INI_VALIDITA'), f.col('DT_FIN_VALIDITA')))
+
+if not IS_PREVISIONE:
+    df_best_choice = df_best_choice.filter(f.col('DATA').between(f.col('DT_INI_VALIDITA'), f.col('DT_FIN_VALIDITA')))
 
 df_best_choice = add_festivita(spark, df_best_choice)
 
@@ -483,7 +468,7 @@ df_best_choice = df_best_choice.withColumn('EAC', f.col('CONSUMO_ANNUO') / f.col
 log_string += f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - CALENDARIO\n'
 boto3.client("s3").put_object(Body=log_string, Bucket=NOME_BUCKET, Key=LOG_PATH_FILE)
 
-#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC03')
+#df_anagrafica.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC03')
 
 ###########################
 ### AGGIUSTIAMO I CAMPI ###
@@ -508,12 +493,13 @@ df_best_choice = df_best_choice.cache()
 
 if EFFETTURARE_RECUPERO:
 
-    DELTA_GG_1G = 15
-    DELTA_GG_2G = 5
+    DELTA_GG_1G = 60
+    DELTA_GG_2G = 15
     # TODO: pensare a come migliorare questa estrazione partendo dai valori contenuti in bc
     DATE_AGGIUNTIVE = tuple([x.DATA for x in get_ponti(spark).select('DATA').distinct().collect()])
+    make_chiave_recupero = f.coalesce(f.col('FESTIVITA'), f.col('GIORNO_SETTIMANA'))
 
-    df_best_choice = df_best_choice.withColumn('CHIAVE_RECUPERO', f.coalesce(f.col('FESTIVITA'), f.col('GIORNO_SETTIMANA')))
+    df_best_choice = df_best_choice.withColumn('CHIAVE_RECUPERO', make_chiave_recupero)
 
     df_anagrafica = df_best_choice.select('POD', 'PROVINCIA_CRM').distinct()
 
@@ -534,12 +520,10 @@ if EFFETTURARE_RECUPERO:
         .select('DATA', 'GIORNO_SETTIMANA').distinct()
     df_1g_best = df_1g_best.join(df_calendario, on=['DATA'], how='left')
     df_1g_best = add_festivita(spark, df_1g_best)
-    df_1g_best = df_1g_best.withColumn('CHIAVE_RECUPERO', f.coalesce(f.col('FESTIVITA'), f.col('GIORNO_SETTIMANA')))
+    df_1g_best = df_1g_best.withColumn('CHIAVE_RECUPERO', make_chiave_recupero)
     df_1g_best = df_1g_best.withColumn('RANK', f.row_number().over(wnd_recupero)).filter(f.col('RANK') == 1)
     df_1g_best = df_1g_best.select('POD', 'ORA_GME', 'CHIAVE_RECUPERO', 'ENERGIA_1G_RECUPERO_NA')
     df_best_choice = df_best_choice.join(df_1g_best, on=['POD', 'ORA_GME', 'CHIAVE_RECUPERO'], how='left')
-
-    #df_1g_best.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/datamodel/RECUPERO_1G/')
 
     del df_1g_best, df_calendario
 
@@ -557,12 +541,10 @@ if EFFETTURARE_RECUPERO:
         .select('DATA', 'GIORNO_SETTIMANA').distinct()
     df_2g_best = df_2g_best.join(df_calendario, on=['DATA'], how='left')
     df_2g_best = add_festivita(spark, df_2g_best)
-    df_2g_best = df_2g_best.withColumn('CHIAVE_RECUPERO', f.coalesce(f.col('FESTIVITA'), f.col('GIORNO_SETTIMANA')))
+    df_2g_best = df_2g_best.withColumn('CHIAVE_RECUPERO', make_chiave_recupero)
     df_2g_best = df_2g_best.withColumn('RANK', f.row_number().over(wnd_recupero)).filter(f.col('RANK') == 1)
     df_2g_best = df_2g_best.select('POD', 'ORA_GME', 'CHIAVE_RECUPERO', 'ENERGIA_2G_RECUPERO_NA')
     df_best_choice = df_best_choice.join(df_2g_best, on=['POD', 'ORA_GME', 'CHIAVE_RECUPERO'], how='left')
-
-    #df_2g_best.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/datamodel/RECUPERO_2G/')
 
     del df_2g_best, df_calendario
 
@@ -576,6 +558,7 @@ else:
 ###########
 
 df_pow = spark.sql("SELECT * FROM `623333656140/thr_prod_glue_db`.ee_programmi_vert")
+#df_pow = spark.read.parquet("s3://eva-qa-s3-model/ee_programmi_vert/")
 w_pow = Window.partitionBy('pod', 'universal_time').orderBy(f.col('ts').desc())
 df_pow = df_pow.withColumn('RANK', f.row_number().over(w_pow))
 df_pow = df_pow.filter(f.col('RANK') == 1)
@@ -640,7 +623,7 @@ df_best_choice = df_best_choice.withColumn('CONSUMI', f.coalesce(
 log_string += f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - VALORI\n'
 boto3.client("s3").put_object(Body=log_string, Bucket=NOME_BUCKET, Key=LOG_PATH_FILE)
 
-df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC04DAVIDE')
+#df_best_choice.write.mode('overwrite').parquet(f's3://{NOME_BUCKET}/BC04DAVIDE')
 
 ############################
 ### AGGREGAZIONE CLUSTER ###
@@ -666,7 +649,7 @@ if IS_PREVISIONE:
     boto3.client("s3").put_object(Body=log_string, Bucket=NOME_BUCKET, Key=LOG_PATH_FILE)
 
     df_best_choice = df_best_choice.groupBy('CLUSTER', 'DATA', 'UNIX_TIME', 'ORA_GME', 'TIMESTAMP').agg(
-        f.sum('ENERGIA_POW_VALORE').alias('PREVISIONE_POW'),
+        f.sum('ENERGIA_POW').alias('PREVISIONE_POW'),
         f.sum('ENERGIA_NA_VALORE').alias('PREVISIONE_NA_RECUPERATI'),
         f.sum('ENERGIA_EAC_VALORE').alias('PREVISIONE_NA_EAC'),
         f.sum('CONSUMI').alias('PREVISIONE_NO_KAPPA'),
